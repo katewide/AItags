@@ -1,4 +1,8 @@
 const http = require('http');
+const { AsyncLocalStorage } = require('async_hooks');
+const previewContext = new AsyncLocalStorage();
+const AI_PREVIEW_TIMEOUT_MS = 180000;
+const AI_PREVIEW_MEDIA_BUDGET_MS = 45000;
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
@@ -273,6 +277,32 @@ function withTimeout(promise, timeoutMs, label) {
   });
 }
 
+// Deadline covers wall-clock time, including downloads that keep sending data.
+async function runPreviewDeadline(operation, timeoutMs, parentSignal) {
+  const controller = new AbortController();
+  const timeoutError = new Error('Превышено время ожидания AI preview');
+  timeoutError.statusCode = 504;
+  let rejectAbort;
+  const aborted = new Promise((resolve, reject) => { rejectAbort = reject; });
+  const onAbort = () => rejectAbort(controller.signal.reason);
+  const onParentAbort = () => controller.abort(parentSignal.reason);
+  controller.signal.addEventListener('abort', onAbort, { once: true });
+  if (parentSignal?.aborted) onParentAbort();
+  else parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(timeoutError), timeoutMs);
+  try {
+    const result = previewContext.run(controller.signal, async () => {
+      controller.signal.throwIfAborted();
+      return operation();
+    });
+    return await Promise.race([result, aborted]);
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', onParentAbort);
+    controller.signal.removeEventListener('abort', onAbort);
+  }
+}
+
 function safePromise(promise) {
   promise.catch(() => {});
   return promise;
@@ -327,7 +357,9 @@ function appendParams(params, value, prefix) {
 function requestJson(endpoint, options = {}) {
   const client = endpoint.protocol === 'https:' ? https : http;
   const timeoutMs = Number(options.timeoutMs || API_REQUEST_TIMEOUT_MS);
-  const requestOptions = { ...options };
+  const signal = previewContext.getStore();
+  signal?.throwIfAborted();
+  const requestOptions = { ...options, ...(signal ? { signal } : {}) };
   delete requestOptions.timeoutMs;
 
   return new Promise((resolve, reject) => {
@@ -369,7 +401,6 @@ function requestJson(endpoint, options = {}) {
 
     req.setTimeout(timeoutMs, () => {
       if (settled) return;
-      settled = true;
       req.destroy(new Error(`Request timeout from ${endpoint.pathname}`));
     });
 
@@ -387,7 +418,9 @@ function requestBuffer(endpoint, options = {}, redirectCount = 0) {
   const client = endpoint.protocol === 'https:' ? https : http;
   const maxBytes = options.maxBytes || AI_MAX_IMAGE_BYTES;
   const sizeLabel = options.sizeLabel || 'File';
-  const requestOptions = { ...options };
+  const signal = previewContext.getStore();
+  signal?.throwIfAborted();
+  const requestOptions = { ...options, ...(signal ? { signal } : {}) };
   delete requestOptions.maxBytes;
   delete requestOptions.sizeLabel;
 
@@ -449,7 +482,6 @@ function requestBuffer(endpoint, options = {}, redirectCount = 0) {
 
     req.setTimeout(API_REQUEST_TIMEOUT_MS, () => {
       if (settled) return;
-      settled = true;
       req.destroy(new Error(`Request timeout from ${endpoint.pathname}`));
     });
 
@@ -3104,6 +3136,24 @@ function formatShortDateForMessage(isoDate) {
 
 async function processClosedTask(taskId, options = {}) {
   const dryRun = Boolean(options.dryRun);
+  const mediaWarnings = options.mediaWarnings || [];
+  let mediaRemainingMs = AI_PREVIEW_MEDIA_BUDGET_MS;
+  const mediaStep = async (label, operation, fallback) => {
+    if (!options.preview) return operation();
+    const parentSignal = previewContext.getStore();
+    parentSignal?.throwIfAborted();
+    const started = Date.now();
+    try {
+      if (mediaRemainingMs <= 0) throw new Error('Бюджет обработки медиа исчерпан');
+      return await runPreviewDeadline(operation, mediaRemainingMs, parentSignal);
+    } catch (error) {
+      parentSignal?.throwIfAborted();
+      mediaWarnings.push({ step: label, error: error.message });
+      return fallback;
+    } finally {
+      mediaRemainingMs -= Date.now() - started;
+    }
+  };
   const { task: mainTask, comments: mainComments, commentsSource } = await fetchTaskWithComments(taskId);
   const filteredMainComments = filterGemmaComments(mainComments);
   const parentId = getParentIdFromTask(mainTask);
@@ -3137,8 +3187,8 @@ async function processClosedTask(taskId, options = {}) {
     };
   }
 
-  const mainImageResult = await prepareTaskImages(mainTask, filteredMainComments, 'currentTask');
-  const mainChatImageResult = await prepareTaskChatImages(mainTask, 'currentTask');
+  const mainImageResult = await mediaStep('prepareTaskImages_current', () => prepareTaskImages(mainTask, filteredMainComments, 'currentTask'), { candidatesCount: 0, candidates: [], images: [] });
+  const mainChatImageResult = await mediaStep('prepareTaskChatImages_current', () => prepareTaskChatImages(mainTask, 'currentTask'), { candidatesCount: 0, candidates: [], images: [] });
   const mainImages = [...mainImageResult.images, ...mainChatImageResult.images].slice(0, AI_MAX_IMAGES);
   saveDebug('lastTaskImages', {
     task_id: taskId,
@@ -3154,8 +3204,8 @@ async function processClosedTask(taskId, options = {}) {
     current_image_facts_found: false,
     parent_image_facts_found: false,
   });
-  const mainImageFacts = await extractImageFacts(mainImages, 'текущей задачи', taskId);
-  const mainAudioResult = await prepareTaskChatAudioTranscripts(mainTask, 'currentTask');
+  const mainImageFacts = await mediaStep('extractImageFacts_current', () => extractImageFacts(mainImages, 'текущей задачи', taskId), null);
+  const mainAudioResult = await mediaStep('prepareTaskChatAudioTranscripts_current', () => prepareTaskChatAudioTranscripts(mainTask, 'currentTask'), { candidatesCount: 0, candidates: [], transcripts: [] });
   let parentImages = [];
   let parentImageCandidatesCount = 0;
   let parentImageCandidates = [];
@@ -3166,13 +3216,13 @@ async function processClosedTask(taskId, options = {}) {
     const { task: parentTask, comments: parentComments, commentsSource: parentCommentsSource } = await fetchTaskWithComments(parentId);
     const filteredParentComments = filterGemmaComments(parentComments);
     const parentTimeLogs = await fetchTaskTimeLogs(parentId);
-    const parentImageResult = await prepareTaskImages(parentTask, filteredParentComments, 'parentTask');
-    const parentChatImageResult = await prepareTaskChatImages(parentTask, 'parentTask');
+    const parentImageResult = await mediaStep('prepareTaskImages_parent', () => prepareTaskImages(parentTask, filteredParentComments, 'parentTask'), { candidatesCount: 0, candidates: [], images: [] });
+    const parentChatImageResult = await mediaStep('prepareTaskChatImages_parent', () => prepareTaskChatImages(parentTask, 'parentTask'), { candidatesCount: 0, candidates: [], images: [] });
     parentImages = [...parentImageResult.images, ...parentChatImageResult.images].slice(0, AI_MAX_IMAGES);
     parentImageCandidatesCount = parentImageResult.candidatesCount + parentChatImageResult.candidatesCount;
     parentImageCandidates = [...parentImageResult.candidates, ...parentChatImageResult.candidates];
-    parentImageFacts = await extractImageFacts(parentImages, 'родительской задачи', taskId);
-    parentAudioResult = await prepareTaskChatAudioTranscripts(parentTask, 'parentTask');
+    parentImageFacts = await mediaStep('extractImageFacts_parent', () => extractImageFacts(parentImages, 'родительской задачи', taskId), null);
+    parentAudioResult = await mediaStep('prepareTaskChatAudioTranscripts_parent', () => prepareTaskChatAudioTranscripts(parentTask, 'parentTask'), { candidatesCount: 0, candidates: [], transcripts: [] });
     contextparentID = {
       parentId,
       parentTask,
@@ -4649,6 +4699,13 @@ function sendAiTestPage(res) {
       </section>
     </div>
     <section>
+      <h2>Теги, сгенерированные AI</h2>
+      <pre id="tags"></pre>
+      <h2>Итоговые теги задачи</h2>
+      <pre id="mergedTags"></pre>
+      <p id="warnings" class="muted"></p>
+    </section>
+    <section>
       <h2>Детали</h2>
       <pre id="details"></pre>
     </section>
@@ -4670,25 +4727,48 @@ function sendAiTestPage(res) {
 	    const final = document.getElementById('final');
     const raw = document.getElementById('raw');
     const details = document.getElementById('details');
+    const tags = document.getElementById('tags');
+    const mergedTags = document.getElementById('mergedTags');
+    const warnings = document.getElementById('warnings');
 
 	    form.addEventListener('submit', async (event) => {
       event.preventDefault();
       run.disabled = true;
       status.textContent = 'Анализирую...';
       final.textContent = '';
+      final.className = '';
+      tags.textContent = '';
+      mergedTags.textContent = '';
+      warnings.textContent = '';
       raw.textContent = '';
       details.textContent = '';
 
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ${AI_PREVIEW_TIMEOUT_MS + 10000});
       try {
         const taskId = document.getElementById('taskId').value.trim();
-        const response = await fetch('/ai-preview?taskId=' + encodeURIComponent(taskId));
+        const response = await fetch('/ai-preview?taskId=' + encodeURIComponent(taskId), { signal: controller.signal });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(renderValue(data.error || data));
 
+        const classification = data.tag_classification || {};
+        const generatedTags = [
+          ...(classification.type ? ['type:' + classification.type] : []),
+          ...(classification.products || []).map(product => 'product:' + product),
+        ];
+        tags.textContent = generatedTags.length ? generatedTags.join('\\n') : 'AI не определил теги';
+        mergedTags.textContent = data.task_tags ? renderValue(data.task_tags) : 'Нет данных';
+        warnings.textContent = (data.media_warnings || []).length
+          ? 'Часть медиа пропущена из-за ограничения времени или ошибки. Результат основан на доступных данных.' : '';
         final.textContent = renderValue(data.ai_comment);
         raw.textContent = renderValue(data.raw_ai_comment);
         details.textContent = JSON.stringify({
           task_id: data.task_id,
+          tag_classification: data.tag_classification,
+          task_tags_would_be_updated: data.task_tags_would_be_updated,
+          media_warnings: data.media_warnings,
+          skipped: data.skipped,
+          reason: data.reason,
           group_id: data.group_id,
           image_model: data.image_model,
           summary_model: data.summary_model,
@@ -4700,12 +4780,13 @@ function sendAiTestPage(res) {
           current_image_facts_found: data.current_image_facts_found,
           parent_image_facts_found: data.parent_image_facts_found,
         }, null, 2);
-        status.textContent = 'Готово';
+        status.textContent = data.skipped ? 'Проверка пропущена: ' + data.reason : warnings.textContent ? 'Готово с предупреждением' : 'Готово';
       } catch (error) {
         status.textContent = 'Ошибка';
-        final.textContent = renderValue(error.message || error);
+        final.textContent = error.name === 'AbortError' ? 'Превышено время ожидания проверки. Попробуйте снова.' : renderValue(error.message || error);
         final.className = 'error';
       } finally {
+        clearTimeout(timer);
         run.disabled = false;
       }
 	    });
@@ -4846,7 +4927,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const result = await processClosedTask(taskId, { dryRun: true });
+      const mediaWarnings = [];
+      const result = await runPreviewDeadline(
+        () => processClosedTask(taskId, { dryRun: true, preview: true, mediaWarnings }),
+        AI_PREVIEW_TIMEOUT_MS
+      );
+      result.media_warnings = mediaWarnings;
       sendJson(res, 200, result);
       return;
     }
@@ -4927,7 +5013,7 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     saveDebug('lastError', { error: error.message });
     log('Request failed', { error: error.message });
-    sendJson(res, 500, { ok: false, error: error.message });
+    sendJson(res, error.statusCode || 500, { ok: false, error: error.message });
   }
 });
 
