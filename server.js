@@ -1,4 +1,5 @@
 const http = require('http');
+const { randomUUID } = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const previewContext = new AsyncLocalStorage();
 const AI_PREVIEW_TIMEOUT_MS = 180000;
@@ -4656,6 +4657,61 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
+const previewJobs = new Map();
+const PREVIEW_JOB_TTL_MS = 10 * 60 * 1000;
+
+function prunePreviewJobs() {
+  for (const [id, job] of previewJobs) {
+    if (job.finishedAt && Date.now() - job.finishedAt >= PREVIEW_JOB_TTL_MS) previewJobs.delete(id);
+  }
+}
+
+function startPreviewJob(taskId) {
+  prunePreviewJobs();
+  const running = [...previewJobs.values()].filter(job => job.status === 'running');
+  const existing = running.find(job => job.taskId === taskId);
+  if (existing) return existing;
+  if (running.length >= 2) {
+    const error = new Error('Уже выполняются две проверки. Дождитесь завершения.');
+    error.statusCode = 429;
+    throw error;
+  }
+  while (previewJobs.size >= 20) {
+    const oldest = [...previewJobs.values()].find(job => job.status !== 'running');
+    if (!oldest) break;
+    previewJobs.delete(oldest.id);
+  }
+  const job = { id: randomUUID(), taskId, status: 'running', startedAt: Date.now() };
+  previewJobs.set(job.id, job);
+  // Respond before starting expensive work; retries reuse an active task's job.
+  setImmediate(async () => {
+    const mediaWarnings = [];
+    try {
+      job.result = await runPreviewDeadline(
+        () => processClosedTask(taskId, { dryRun: true, preview: true, mediaWarnings }),
+        AI_PREVIEW_TIMEOUT_MS
+      );
+      job.result.media_warnings = mediaWarnings;
+      job.status = 'completed';
+    } catch (error) {
+      job.error = error.message;
+      job.status = 'failed';
+    } finally {
+      job.finishedAt = Date.now();
+      const cleanup = setTimeout(() => previewJobs.delete(job.id), PREVIEW_JOB_TTL_MS);
+      cleanup.unref();
+    }
+  });
+  return job;
+}
+
+function previewJobResponse(job) {
+  return {
+    ok: true, job_id: job.id, task_id: job.taskId, status: job.status,
+    result: job.result, error: job.error,
+  };
+}
+
 function sendAiTestPage(res) {
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`<!doctype html>
@@ -4747,9 +4803,23 @@ function sendAiTestPage(res) {
       const timer = setTimeout(() => controller.abort(), ${AI_PREVIEW_TIMEOUT_MS + 10000});
       try {
         const taskId = document.getElementById('taskId').value.trim();
-        const response = await fetch('/ai-preview?taskId=' + encodeURIComponent(taskId), { signal: controller.signal });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(renderValue(data.error || data));
+        async function readPreview(url, options = {}) {
+          const response = await fetch(url, { ...options, signal: controller.signal, cache: 'no-store' });
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(renderValue(data.error || data));
+          return data;
+        }
+        let job = await readPreview('/ai-preview?taskId=' + encodeURIComponent(taskId), { method: 'POST' });
+        while (job.status === 'running') {
+          if (controller.signal.aborted) throw new DOMException('Timeout', 'AbortError');
+          status.textContent = 'Анализирую… Проверка выполняется в фоне';
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          job = await readPreview('/ai-preview/status?jobId=' + encodeURIComponent(job.job_id));
+        }
+        if (job.status === 'failed') throw new Error(job.error || 'Ошибка анализа');
+        if (job.status !== 'completed' || !job.result) throw new Error('Неизвестный статус проверки');
+        const data = job.result;
+        if (!data.ok) throw new Error(renderValue(data.error || data));
 
         const classification = data.tag_classification || {};
         const generatedTags = [
@@ -4915,7 +4985,20 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/ai-preview') {
+    if (req.method === 'GET' && pathname === '/ai-preview/status') {
+      res.setHeader('Cache-Control', 'no-store');
+      prunePreviewJobs();
+      const jobId = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams.get('jobId');
+      const job = previewJobs.get(jobId);
+      if (!job) {
+        sendJson(res, 404, { ok: false, error: 'Проверка не найдена или сервер перезапущен. Запустите проверку снова.' });
+        return;
+      }
+      sendJson(res, 200, previewJobResponse(job));
+      return;
+    }
+
+    if (['GET', 'HEAD', 'POST'].includes(req.method) && pathname === '/ai-preview') {
       const taskId = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams.get('taskId') || '184538';
       if (!normalizeId(taskId)) {
         sendJson(res, 400, { ok: false, error: 'Invalid taskId' });
@@ -4927,13 +5010,9 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const mediaWarnings = [];
-      const result = await runPreviewDeadline(
-        () => processClosedTask(taskId, { dryRun: true, preview: true, mediaWarnings }),
-        AI_PREVIEW_TIMEOUT_MS
-      );
-      result.media_warnings = mediaWarnings;
-      sendJson(res, 200, result);
+      res.setHeader('Cache-Control', 'no-store');
+      const job = startPreviewJob(String(normalizeId(taskId)));
+      sendJson(res, 202, previewJobResponse(job));
       return;
     }
 
