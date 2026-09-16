@@ -4934,6 +4934,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   log(`Server running on port ${PORT}`);
 
+  // Автоматическая проверка времени закрытых задач временно отключена.
+  // Ручной запуск через /time-check сохранён.
+  /*
   if (TASK_TIME_CHECK_ENABLED && TASK_TIME_CHECK_RUN_ON_START) {
     setTimeout(() => {
       runTaskTimeCheck().catch(error => {
@@ -4944,6 +4947,7 @@ server.listen(PORT, () => {
   }
 
   if (TASK_TIME_CHECK_ENABLED) scheduleNextTaskTimeCheck();
+  */
 
   // Автоматическая проверка открытых задач временно отключена:
   // не запускаем её при старте и не ставим следующее выполнение по расписанию.
