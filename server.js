@@ -2635,9 +2635,8 @@ function extractTaskTagClassification(aiComment) {
     const products = Array.isArray(parsed?.products)
       ? [...new Set(parsed.products.filter(product => TASK_TAXONOMY.products.includes(product)))]
       : [];
-    const objects = Array.isArray(parsed?.objects)
-      ? [...new Set(parsed.objects.filter(object => TASK_TAXONOMY.objects.includes(object)))]
-      : [];
+    // Object categories are accepted only when accompanied by a valid name.
+    const objects = [];
     const objectNames = [];
     const seenObjectNames = new Set();
     for (const entry of Array.isArray(parsed?.object_names) ? parsed.object_names : []) {
@@ -2667,7 +2666,6 @@ function buildManagedTaskTags(classification) {
   const tags = [];
   if (classification.type) tags.push(`type:${classification.type}`);
   for (const product of classification.products) tags.push(`product:${product}`);
-  for (const object of classification.objects || []) tags.push(`object:${object}`);
   for (const object of classification.object_names || []) {
     tags.push(`object:${object.type} ${JSON.stringify(object.name)}`);
   }
@@ -4846,7 +4844,6 @@ function sendAiTestPage(res) {
         const generatedTags = [
           ...(classification.type ? ['type:' + classification.type] : []),
           ...(classification.products || []).map(product => 'product:' + product),
-          ...(classification.objects || []).map(object => 'object:' + object),
           ...(classification.object_names || []).map(object => 'object:' + object.type + ' ' + JSON.stringify(object.name)),
         ];
         tags.textContent = generatedTags.length ? generatedTags.join('\\n') : 'AI не определил теги';
