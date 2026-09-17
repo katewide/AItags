@@ -2625,9 +2625,9 @@ function getTaskTags(task) {
 }
 
 function extractTaskTagClassification(aiComment) {
-  if (!TASK_TAGGING_ENABLED) return { found: false, type: null, products: [], objects: [] };
+  if (!TASK_TAGGING_ENABLED) return { found: false, type: null, products: [], objects: [], object_names: [] };
   const match = String(aiComment || '').match(/\[AI_TAGS\]\s*([\s\S]*?)\s*\[\/AI_TAGS\]/i);
-  if (!match) return { found: false, type: null, products: [], objects: [] };
+  if (!match) return { found: false, type: null, products: [], objects: [], object_names: [] };
 
   try {
     const parsed = JSON.parse(match[1]);
@@ -2638,10 +2638,22 @@ function extractTaskTagClassification(aiComment) {
     const objects = Array.isArray(parsed?.objects)
       ? [...new Set(parsed.objects.filter(object => TASK_TAXONOMY.objects.includes(object)))]
       : [];
-    return { found: true, type, products, objects };
+    const objectNames = [];
+    const seenObjectNames = new Set();
+    for (const entry of Array.isArray(parsed?.object_names) ? parsed.object_names : []) {
+      if (!TASK_TAXONOMY.objects.includes(entry?.type) || typeof entry?.name !== 'string') continue;
+      const name = entry.name.trim();
+      if (!name || /[\x00-\x1f\x7f]/.test(name)) continue;
+      const key = JSON.stringify([entry.type, name.toLocaleLowerCase('ru-RU')]);
+      if (seenObjectNames.has(key)) continue;
+      seenObjectNames.add(key);
+      objectNames.push({ type: entry.type, name });
+      if (!objects.includes(entry.type)) objects.push(entry.type);
+    }
+    return { found: true, type, products, objects, object_names: objectNames };
   } catch (error) {
     log('AI tags JSON parse failed', { error: error.message, value: truncateDebugText(match[1], 500) });
-    return { found: false, type: null, products: [], objects: [] };
+    return { found: false, type: null, products: [], objects: [], object_names: [] };
   }
 }
 
@@ -2656,6 +2668,9 @@ function buildManagedTaskTags(classification) {
   if (classification.type) tags.push(`type:${classification.type}`);
   for (const product of classification.products) tags.push(`product:${product}`);
   for (const object of classification.objects || []) tags.push(`object:${object}`);
+  for (const object of classification.object_names || []) {
+    tags.push(`object:${object.type} ${JSON.stringify(object.name)}`);
+  }
   return tags;
 }
 
@@ -4832,6 +4847,7 @@ function sendAiTestPage(res) {
           ...(classification.type ? ['type:' + classification.type] : []),
           ...(classification.products || []).map(product => 'product:' + product),
           ...(classification.objects || []).map(object => 'object:' + object),
+          ...(classification.object_names || []).map(object => 'object:' + object.type + ' ' + JSON.stringify(object.name)),
         ];
         tags.textContent = generatedTags.length ? generatedTags.join('\\n') : 'AI не определил теги';
         mergedTags.textContent = data.task_tags ? renderValue(data.task_tags) : 'Нет данных';
