@@ -2625,9 +2625,9 @@ function getTaskTags(task) {
 }
 
 function extractTaskTagClassification(aiComment) {
-  if (!TASK_TAGGING_ENABLED) return { found: false, type: null, products: [] };
+  if (!TASK_TAGGING_ENABLED) return { found: false, type: null, products: [], objects: [] };
   const match = String(aiComment || '').match(/\[AI_TAGS\]\s*([\s\S]*?)\s*\[\/AI_TAGS\]/i);
-  if (!match) return { found: false, type: null, products: [] };
+  if (!match) return { found: false, type: null, products: [], objects: [] };
 
   try {
     const parsed = JSON.parse(match[1]);
@@ -2635,10 +2635,13 @@ function extractTaskTagClassification(aiComment) {
     const products = Array.isArray(parsed?.products)
       ? [...new Set(parsed.products.filter(product => TASK_TAXONOMY.products.includes(product)))]
       : [];
-    return { found: true, type, products };
+    const objects = Array.isArray(parsed?.objects)
+      ? [...new Set(parsed.objects.filter(object => TASK_TAXONOMY.objects.includes(object)))]
+      : [];
+    return { found: true, type, products, objects };
   } catch (error) {
     log('AI tags JSON parse failed', { error: error.message, value: truncateDebugText(match[1], 500) });
-    return { found: false, type: null, products: [] };
+    return { found: false, type: null, products: [], objects: [] };
   }
 }
 
@@ -2652,16 +2655,19 @@ function buildManagedTaskTags(classification) {
   const tags = [];
   if (classification.type) tags.push(`type:${classification.type}`);
   for (const product of classification.products) tags.push(`product:${product}`);
+  for (const object of classification.objects || []) tags.push(`object:${object}`);
   return tags;
 }
 
 function mergeTaskTags(existingTags, classification) {
   const replaceType = Boolean(classification.type);
   const replaceProducts = classification.products.length > 0;
+  const replaceObjects = (classification.objects || []).length > 0;
   const retained = existingTags.filter(tag => {
     const normalized = tag.toLocaleLowerCase('ru-RU');
     if (replaceType && normalized.startsWith('type:')) return false;
     if (replaceProducts && normalized.startsWith('product:')) return false;
+    if (replaceObjects && normalized.startsWith('object:')) return false;
     return true;
   });
   return [...new Set([...retained, ...buildManagedTaskTags(classification)])];
@@ -2696,7 +2702,7 @@ async function updateTaskTags(taskId, classification, currentTask = null) {
   if (!classification.found) {
     return { updated: false, skipped: true, reason: 'ai_tags_missing_or_invalid', tags: getTaskTags(currentTask), error: null };
   }
-  if (!classification.type && classification.products.length === 0) {
+  if (!classification.type && classification.products.length === 0 && (classification.objects || []).length === 0) {
     return { updated: false, skipped: true, reason: 'classification_empty', tags: getTaskTags(currentTask), error: null };
   }
 
@@ -3435,7 +3441,7 @@ async function processClosedTask(taskId, options = {}) {
   let taskTagsWouldBeUpdated = false;
 
   if (dryRun) {
-    if (TASK_TAGGING_ENABLED && tagClassification.found && (tagClassification.type || tagClassification.products.length > 0)) {
+    if (TASK_TAGGING_ENABLED && tagClassification.found && (tagClassification.type || tagClassification.products.length > 0 || tagClassification.objects.length > 0)) {
       const existingTags = getTaskTags(mainTask);
       const mergedTags = mergeTaskTags(existingTags, tagClassification);
       taskTagsWouldBeUpdated = !taskTagListsEqual(existingTags, mergedTags);
@@ -4825,6 +4831,7 @@ function sendAiTestPage(res) {
         const generatedTags = [
           ...(classification.type ? ['type:' + classification.type] : []),
           ...(classification.products || []).map(product => 'product:' + product),
+          ...(classification.objects || []).map(object => 'object:' + object),
         ];
         tags.textContent = generatedTags.length ? generatedTags.join('\\n') : 'AI не определил теги';
         mergedTags.textContent = data.task_tags ? renderValue(data.task_tags) : 'Нет данных';
