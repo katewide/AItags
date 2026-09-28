@@ -2667,7 +2667,7 @@ function buildManagedTaskTags(classification) {
   if (classification.type) tags.push(`type:${classification.type}`);
   for (const product of classification.products) tags.push(`product:${product}`);
   for (const object of classification.object_names || []) {
-    tags.push(`object:${object.type}:${object.name}`);
+    tags.push(`object:${object.type}_${object.name}`);
   }
   return tags;
 }
@@ -4844,7 +4844,7 @@ function sendAiTestPage(res) {
         const generatedTags = [
           ...(classification.type ? ['type:' + classification.type] : []),
           ...(classification.products || []).map(product => 'product:' + product),
-          ...(classification.object_names || []).map(object => 'object:' + object.type + ':' + object.name),
+          ...(classification.object_names || []).map(object => 'object:' + object.type + '_' + object.name),
         ];
         tags.textContent = generatedTags.length ? generatedTags.join('\\n') : 'AI не определил теги';
         mergedTags.textContent = data.task_tags ? renderValue(data.task_tags) : 'Нет данных';
