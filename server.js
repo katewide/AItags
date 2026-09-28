@@ -2642,7 +2642,7 @@ function extractTaskTagClassification(aiComment) {
     for (const entry of Array.isArray(parsed?.object_names) ? parsed.object_names : []) {
       if (!TASK_TAXONOMY.objects.includes(entry?.type) || typeof entry?.name !== 'string') continue;
       const name = entry.name.trim();
-      if (!name || /[\x00-\x1f\x7f]/.test(name)) continue;
+      if (!/^[\p{L}_][\p{L}\p{N}_]*$/u.test(name)) continue;
       const key = JSON.stringify([entry.type, name.toLocaleLowerCase('ru-RU')]);
       if (seenObjectNames.has(key)) continue;
       seenObjectNames.add(key);
@@ -2667,7 +2667,7 @@ function buildManagedTaskTags(classification) {
   if (classification.type) tags.push(`type:${classification.type}`);
   for (const product of classification.products) tags.push(`product:${product}`);
   for (const object of classification.object_names || []) {
-    tags.push(`object:${object.type} ${JSON.stringify(object.name)}`);
+    tags.push(`object:${object.type}:${object.name}`);
   }
   return tags;
 }
@@ -4844,7 +4844,7 @@ function sendAiTestPage(res) {
         const generatedTags = [
           ...(classification.type ? ['type:' + classification.type] : []),
           ...(classification.products || []).map(product => 'product:' + product),
-          ...(classification.object_names || []).map(object => 'object:' + object.type + ' ' + JSON.stringify(object.name)),
+          ...(classification.object_names || []).map(object => 'object:' + object.type + ':' + object.name),
         ];
         tags.textContent = generatedTags.length ? generatedTags.join('\\n') : 'AI не определил теги';
         mergedTags.textContent = data.task_tags ? renderValue(data.task_tags) : 'Нет данных';
