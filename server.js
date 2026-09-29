@@ -2725,12 +2725,21 @@ function stripTaskTagBlock(aiComment) {
     .trim();
 }
 
+function formatProductTagName(product) {
+  const names = {
+    'бп': 'БП', 'зуп': 'ЗУП', 'ут': 'УТ', 'ка': 'КА', 'erp': 'ERP',
+    'до': 'ДО', 'эдо': 'ЭДО', 'кэдо': 'КЭДО', 'унф': 'УНФ',
+    '1с-отчетность': '1С-отчетность', 'розница': 'Розница',
+  };
+  return names[product] || product;
+}
+
 function buildManagedTaskTags(classification) {
   const tags = [];
-  if (classification.type) tags.push(`type:${classification.type}`);
-  for (const product of classification.products) tags.push(`product:${product}`);
+  if (classification.type) tags.push(`type: ${classification.type}`);
+  for (const product of classification.products || []) tags.push(`product: ${formatProductTagName(product)}`);
   for (const object of classification.object_names || []) {
-    tags.push(`object:${object.type}_${object.name}`);
+    tags.push(`object: ${object.type}_${object.name}`);
   }
   return tags;
 }
@@ -2750,7 +2759,7 @@ function mergeTaskTags(existingTags, classification) {
 }
 
 function taskTagListsEqual(left, right) {
-  const normalize = values => [...new Set(values.map(value => value.toLocaleLowerCase('ru-RU'))) ].sort();
+  const normalize = values => [...new Set(values) ].sort();
   const normalizedLeft = normalize(left);
   const normalizedRight = normalize(right);
   return normalizedLeft.length === normalizedRight.length && normalizedLeft.every((value, index) => value === normalizedRight[index]);
@@ -4944,6 +4953,9 @@ function sendAiTestPage(res) {
     </section>
   </main>
   <script>
+    ${formatProductTagName.toString()}
+    ${buildManagedTaskTags.toString()}
+
     function renderValue(value) {
       if (value === null || value === undefined) return '';
       if (typeof value === 'string') return value;
@@ -4999,11 +5011,7 @@ function sendAiTestPage(res) {
         if (!data.ok) throw new Error(renderValue(data.error || data));
 
         const classification = data.tag_classification || {};
-        const generatedTags = [
-          ...(classification.type ? ['type:' + classification.type] : []),
-          ...(classification.products || []).map(product => 'product:' + product),
-          ...(classification.object_names || []).map(object => 'object:' + object.type + '_' + object.name),
-        ];
+        const generatedTags = buildManagedTaskTags(classification);
         tags.textContent = generatedTags.length ? generatedTags.join('\\n') : 'AI не определил теги';
         mergedTags.textContent = data.task_tags ? renderValue(data.task_tags) : 'Нет данных';
         warnings.textContent = (data.media_warnings || []).length

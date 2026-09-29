@@ -35,7 +35,7 @@ test('blank summary skips AI and PATCH; uppercase and camelCase field supported'
 });
 test('summary classification patches only tags and preserves manual tags; repeated summary deduplicated',async()=>{
  const {c,state}=setup();const result=await c.processTaskSummaryTags('1');assert(result.updated);assert.equal(state.ai,1);
- const patch=state.calls.find(x=>x.method==='PATCH');assert.equal(patch.url,'/tasks/1');assert.deepEqual(JSON.parse(JSON.stringify(patch.body)),{tags:['manual','type:консультация','product:бп']});
+ const patch=state.calls.find(x=>x.method==='PATCH');assert.equal(patch.url,'/tasks/1');assert.deepEqual(JSON.parse(JSON.stringify(patch.body)),{tags:['manual','type: консультация','product: БП']});
  assert.equal((await c.processTaskSummaryTags('1')).reason,'task_summary_already_tagged');assert.equal(state.ai,1);
 });
 test('summary changed during AI does not apply stale classification',async()=>{
@@ -84,4 +84,18 @@ test('close flow saves TITLE then SUMMARY then tags; summary failure blocks tags
  await c.finishClose(false);assert.deepEqual(events,['title','summary','tags']);events.length=0;
  c.updateTaskResultField=async()=>{events.push('summary');return {error:'failed'}};assert.equal((await c.finishClose(false)).taskTagsResult.reason,'task_summary_save_failed');assert.deepEqual(events,['title','summary']);events.length=0;
  assert((await c.finishClose(true)).taskTagsWouldBeUpdated);assert.equal(events.length,0);
+});
+
+test('tag formatting and preview share casing and spacing; old formats require update',()=>{
+ const {c}=setup();
+ const classification={type:'консультация',products:['ка','зуп','ут','унф','бп','кэдо','эдо','1с-отчетность','erp','до','розница'],object_names:[{type:'роль',name:'РольOData'}]};
+ const expected=['type: консультация','product: КА','product: ЗУП','product: УТ','product: УНФ','product: БП','product: КЭДО','product: ЭДО','product: 1С-отчетность','product: ERP','product: ДО','product: Розница','object: роль_РольOData'];
+ assert.deepEqual(JSON.parse(JSON.stringify(c.buildManagedTaskTags(classification))),expected);
+ assert.equal(c.taskTagListsEqual(['product: ка'],['product: КА']),false);
+ assert.equal(c.taskTagListsEqual(['product:ка'],['product: КА']),false);
+ let html;c.res={writeHead(){},end(x){html=x}};
+ vm.runInContext(section('function sendAiTestPage','function getNextTaskTimeCheckDate'),c);vm.runInContext('sendAiTestPage(res)',c);
+ const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
+ const browser=vm.createContext({document:{getElementById:()=>({addEventListener(){}})}});vm.runInContext(script,browser);
+ assert.deepEqual(JSON.parse(JSON.stringify(browser.buildManagedTaskTags(classification))),expected);
 });
