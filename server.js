@@ -2149,10 +2149,14 @@ function buildTimeChangesMessage(changes) {
 
   for (const change of changes) {
     const userName = change.userName || UNKNOWN_USER_NAME;
+    const entryDate = change.time_entry_created_date ? new Date(change.time_entry_created_date) : null;
+    const dateLabel = entryDate && Number.isFinite(entryDate.getTime())
+      ? entryDate.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric' })
+      : 'не указана';
     const entryLabel = change.timeEntryId ? ` | 🔑 ${change.timeEntryId}` : '';
     lines.push(
       '',
-      `${getChangeIcon(change.diffMinutes)} Задача [URL=${change.taskLink}]${change.taskId}[/URL] ${getChangeVerb(change.diffMinutes)} на ${formatHours(change.diffMinutes)} ч. | 👤 ${userName}${entryLabel}`
+      `${getChangeIcon(change.diffMinutes)} Задача [URL=${change.taskLink}]${change.taskId}[/URL] ${getChangeVerb(change.diffMinutes)} на ${formatHours(change.diffMinutes)} ч. | 👤 ${userName} | 📅 ${dateLabel}${entryLabel}`
     );
   }
 
