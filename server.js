@@ -2445,7 +2445,7 @@ function getHistoryBatchNearWebhook(history, webhookTimestampMs) {
   const latestNearbyChange = nearbyHistory[0];
   if (!latestNearbyChange) return [];
 
-  return nearbyHistory.filter(item => Math.abs(latestNearbyChange.createdAtMs - item.createdAtMs) <= 500);
+  return nearbyHistory.filter(item => item.createdAtMs === latestNearbyChange.createdAtMs);
 }
 
 async function getLatestUpdateContext(taskId, webhookTimestampMs = null) {
@@ -2459,7 +2459,7 @@ async function getLatestUpdateContext(taskId, webhookTimestampMs = null) {
   if (!latestChange) return { history: sortedHistory, batch: [] };
   return {
     history: sortedHistory,
-    batch: sortedHistory.filter(item => latestChange.createdAtMs - item.createdAtMs <= 2000),
+    batch: sortedHistory.filter(item => item.createdAtMs === latestChange.createdAtMs),
   };
 }
 
@@ -2522,13 +2522,6 @@ function findClosedStatusChangeNearDoneStage(history, doneStageChange) {
   return findClosedStatusChangeNearAnchor(history, doneStageChange);
 }
 
-function findResponsibleChangeNearStage(updateBatch, stageChange) {
-  if (!stageChange) return null;
-
-  return updateBatch.find(change =>
-    normalizeHistoryField(change?.field) === normalizeHistoryField('RESPONSIBLE_ID')
-  ) || null;
-}
 
 function normalizeAiContent(content) {
   if (content == null) return '';
@@ -4732,16 +4725,27 @@ async function handleWebhook(body) {
   const primaryChange = updateBatch[0] || null;
   const primaryField = normalizeHistoryField(primaryChange?.field);
 
+  // Handle reassignment anywhere in this timestamp group, before unrelated field guards.
+  const actions = [];
+  const responsibleChange = updateBatch.find(change =>
+    normalizeHistoryField(change?.field) === normalizeHistoryField('RESPONSIBLE_ID')
+  );
+  const previousResponsibleId = normalizeId(responsibleChange?.value?.from);
+  if (previousResponsibleId) {
+    const result = await addAccomplice(taskId, previousResponsibleId);
+    actions.push({ branch: 'responsible_changed', ...result });
+  }
+
   if (updateBatch.some(change => normalizeHistoryField(change?.field) === normalizeHistoryField(TASK_RESULT_FIELD_CODE))) {
     const result = queueTaskSummaryTags(taskId);
     return {
       statusCode: 200,
-      data: { ok: true, reason: 'task_summary_update', ...result },
+      data: { ok: true, reason: 'task_summary_update', ...result, actions },
     };
   }
 
   if (updateBatch.some(isTaskSummaryFieldChange)) {
-    return { statusCode: 200, data: { ok: true, ignored: true, reason: 'task_title_update' } };
+    return { statusCode: 200, data: { ok: true, ignored: actions.length === 0, reason: 'task_title_update', actions } };
   }
 
   const stageChange = primaryField === normalizeHistoryField('STAGE') ? primaryChange : null;
@@ -4764,27 +4768,15 @@ async function handleWebhook(body) {
       statusCode: 200,
       data: {
         ok: true,
-        ignored: true,
+        ignored: actions.length === 0,
+        actions,
         reason: 'ai_generated_tag_update',
         task_id: taskId,
       },
     };
   }
 
-  const responsibleChange = primaryField === normalizeHistoryField('RESPONSIBLE_ID')
-    ? primaryChange
-    : stageChange
-      ? findResponsibleChangeNearStage(updateBatch, stageChange)
-      : null;
   const statusChange = primaryField === normalizeHistoryField('STATUS') ? primaryChange : null;
-  const actions = [];
-
-  // Ветка 1: изменение ответственного, добавление прошлого исполнителя в соисполнители.
-  const previousResponsibleId = normalizeId(responsibleChange?.value?.from);
-  if (previousResponsibleId) {
-    const result = await addAccomplice(taskId, previousResponsibleId);
-    actions.push({ branch: 'responsible_changed', ...result });
-  }
 
   let shouldProcessClosedTask = String(statusChange?.value?.to) === '5';
   let closeTrigger = shouldProcessClosedTask ? 'status_to_5' : null;
@@ -5323,3 +5315,4 @@ server.listen(PORT, () => {
   if (OPEN_TASK_CHECK_ENABLED) scheduleNextOpenTaskWatchCheck();
   */
 });
+

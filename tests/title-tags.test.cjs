@@ -11,7 +11,7 @@ function setup() {
     TASK_SUMMARY_FIELD_CODE:'UF_TASK_TITLE', TASK_RESULT_FIELD_CODE:'UF_TASK_SUMMARY', TASK_TAG_FIELD_NAME:'tags', TASK_TAGGING_ENABLED:true,
     TASK_TAXONOMY:{types:['консультация'],products:['бп'],objects:['документ']},
     SUMMARY_MODEL_NAME:'test',OPEN_TASK_AI_REQUEST_TIMEOUT_MS:100,AI_PREVIEW_TIMEOUT_MS:200,
-    normalizeTaskPayload:x=>x, log(){},saveDebug(){},truncateDebugText:x=>x,
+    normalizeId:x=>x==null?null:String(x), normalizeTaskPayload:x=>x, log(){},saveDebug(){},truncateDebugText:x=>x,
     markRecentAiTagUpdate(){},recentAiTagUpdates:new Map(), Date,
     closedTaskProcessingTaskIds:new Set(),previewContext:{getStore:()=>null},
     setTimeout:fn=>state.queued.push(fn),runPreviewDeadline:fn=>fn(),
@@ -174,3 +174,4 @@ test('close writes all three parts of one response and summary event reuses comp
  assert(comment.includes('Work done'));assert(comment.includes('Analysis'));assert(!comment.includes('AI_TAGS'));
  assert.equal((await c.processTaskSummaryTags('1')).reason,'task_summary_already_tagged');assert.equal(state.ai,1);
 });
+
