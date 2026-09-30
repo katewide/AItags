@@ -2147,19 +2147,23 @@ function saveTimeChatDecision(changes, message) {
   });
 }
 
-function buildTimeChangesMessage(changes) {
-  const lines = ['🐀 [b]Изменения в закрытых задачах[/b]'];
+function buildTimeChangesMessage(changes, reportDate = new Date()) {
+  const formatDate = (value, year = 'numeric') => {
+    const date = value ? new Date(value) : null;
+    return date && Number.isFinite(date.getTime())
+      ? date.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year })
+      : 'не указана';
+  };
+  const lines = [`🐀 [b]Изменения в закрытых задачах ${formatDate(reportDate)}[/b]`];
 
   for (const change of changes) {
     const userName = change.userName || UNKNOWN_USER_NAME;
-    const entryDate = change.time_entry_created_date ? new Date(change.time_entry_created_date) : null;
-    const dateLabel = entryDate && Number.isFinite(entryDate.getTime())
-      ? entryDate.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric' })
-      : 'не указана';
+    const dateLabel = formatDate(change.time_entry_created_date);
+    const closedDateLabel = formatDate(getTaskClosedDate(change.task), '2-digit');
     const entryLabel = change.timeEntryId ? ` | 🔑 ${change.timeEntryId}` : '';
     lines.push(
       '',
-      `${getChangeIcon(change.diffMinutes)} Задача [URL=${change.taskLink}]${change.taskId}[/URL] ${getChangeVerb(change.diffMinutes)} на ${formatHours(change.diffMinutes)} ч. | 👤 ${userName} | 📅 ${dateLabel}${entryLabel}`
+      `${getChangeIcon(change.diffMinutes)} ${formatHours(change.diffMinutes)} ч. в задаче [URL=${change.taskLink}]${change.taskId}[/URL] | 🏁 ${closedDateLabel} | 👤 ${userName} | 📅 ${dateLabel}${entryLabel}`
     );
   }
 
