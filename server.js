@@ -2163,7 +2163,7 @@ function buildTimeChangesMessage(changes, reportDate = new Date()) {
     const entryLabel = change.timeEntryId ? ` | 🔑 ${change.timeEntryId}` : '';
     lines.push(
       '',
-      `${getChangeIcon(change.diffMinutes)} ${formatHours(change.diffMinutes)} ч. в задаче [URL=${change.taskLink}]${change.taskId}[/URL] | 🏁 ${closedDateLabel} | 👤 ${userName} | 📅 ${dateLabel}${entryLabel}`
+      `${getChangeIcon(change.diffMinutes)} [b]${formatHours(change.diffMinutes)} ч.[/b] в задаче [URL=${change.taskLink}]${change.taskId}[/URL] | 🏁 ${closedDateLabel} | 👤 ${userName} | 📅 ${dateLabel}${entryLabel}`
     );
   }
 
