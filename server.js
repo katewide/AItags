@@ -2705,6 +2705,7 @@ function extractTaskTagClassification(aiComment) {
     for (const entry of Array.isArray(parsed?.object_names) ? parsed.object_names : []) {
       if (!TASK_TAXONOMY.objects.includes(entry?.type) || typeof entry?.name !== 'string') continue;
       const name = entry.name.trim();
+      if (/^(?:null|undefined)$/i.test(name)) continue;
       if (!/^[\p{L}_][\p{L}\p{N}_]*$/u.test(name)) continue;
       const key = JSON.stringify([entry.type, name.toLocaleLowerCase('ru-RU')]);
       if (seenObjectNames.has(key)) continue;
@@ -2735,12 +2736,29 @@ function formatProductTagName(product) {
 }
 
 function buildManagedTaskTags(classification) {
+  const validValue = value =>
+    typeof value === 'string'
+    && value.trim().length > 0
+    && !/^(?:null|undefined)$/i.test(value.trim());
+
   const tags = [];
-  if (classification.type) tags.push(`type: ${classification.type}`);
-  for (const product of classification.products || []) tags.push(`product: ${formatProductTagName(product)}`);
-  for (const object of classification.object_names || []) {
-    tags.push(`object: ${object.type}_${object.name}`);
+
+  if (validValue(classification.type)) {
+    tags.push(`type: ${classification.type.trim()}`);
   }
+
+  for (const product of classification.products || []) {
+    if (validValue(product)) {
+      tags.push(`product: ${formatProductTagName(product.trim())}`);
+    }
+  }
+
+  for (const object of classification.object_names || []) {
+    if (!validValue(object?.type) || !validValue(object?.name)) continue;
+
+    tags.push(`object: ${object.type.trim()}_${object.name.trim()}`);
+  }
+
   return tags;
 }
 
