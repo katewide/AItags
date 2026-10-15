@@ -2445,11 +2445,11 @@ function getWebhookTimestampMs(data) {
 function getHistoryBatchNearWebhook(history, webhookTimestampMs) {
   if (!Number.isFinite(webhookTimestampMs)) return [];
 
-  const nearbyHistory = history.filter(item => Math.abs(item.createdAtMs - webhookTimestampMs) <= 10 * 1000);
-  const latestNearbyChange = nearbyHistory[0];
-  if (!latestNearbyChange) return [];
-
-  return nearbyHistory.filter(item => item.createdAtMs === latestNearbyChange.createdAtMs);
+  // Anchor to the webhook, not a later history entry: current second and previous second.
+  const eventSecond = Math.floor(webhookTimestampMs / 1000) * 1000;
+  return history.filter(item =>
+    item.createdAtMs >= eventSecond - 1000 && item.createdAtMs < eventSecond + 1000
+  );
 }
 
 async function getLatestUpdateContext(taskId, webhookTimestampMs = null) {
@@ -2463,7 +2463,7 @@ async function getLatestUpdateContext(taskId, webhookTimestampMs = null) {
   if (!latestChange) return { history: sortedHistory, batch: [] };
   return {
     history: sortedHistory,
-    batch: sortedHistory.filter(item => item.createdAtMs === latestChange.createdAtMs),
+    batch: getHistoryBatchNearWebhook(sortedHistory, latestChange.createdAtMs),
   };
 }
 

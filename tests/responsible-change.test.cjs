@@ -44,11 +44,25 @@ test('same-second SUMMARY, TITLE or AI tag changes do not hide reassignment',asy
   await run();assert.equal(state.patches.length,1,field);
  }
 });
-test('only exact latest timestamp is grouped, with and without webhook timestamp',async()=>{
+test('current and previous second are grouped, with and without webhook timestamp',async()=>{
  const {c,state,run}=setup([change('AUDITORS','38','38,716'),change('RESPONSIBLE_ID','716','650','2026-09-30T16:18:35+03:00')]);
- await run();await run(null);assert.equal(state.patches.length,0);
- const batch=(await c.getLatestUpdateContext('1',null)).batch;assert.equal(batch.length,1);
- assert.equal(batch[0].field,'AUDITORS');
+ await run();await run(null);assert.equal(state.patches.length,1);
+ assert.equal((await c.getLatestUpdateContext('1',null)).batch.length,2);
+});
+test('later stage does not hide 38 to 730 reassignment for either webhook',async()=>{
+ const history=[change('STAGE','Новые','Выполняются','2026-10-15T22:31:50+03:00'),change('AUDITORS','','38','2026-10-15T22:31:49+03:00'),change('RESPONSIBLE_ID','38','730','2026-10-15T22:31:49+03:00')];
+ for(const second of ['49','50']){
+  const {c,state,run}=setup(history);
+  const ts=Date.parse('2026-10-15T22:31:'+second+'+03:00')/1000;
+  await run(ts);await run(ts);
+  assert.equal(state.patches.length,1);
+  assert(state.task.accomplices.includes('38'));
+  if(second==='49')assert(!(await c.getLatestUpdateContext('1',ts*1000)).batch.some(x=>x.field==='STAGE'));
+ }
+});
+test('entries two seconds old and next second are excluded',async()=>{
+ const {state,run}=setup([change('RESPONSIBLE_ID','716','650','2026-09-30T16:18:37+03:00'),change('AUDITORS','','38'),change('RESPONSIBLE_ID','704','38','2026-09-30T16:18:34+03:00')]);
+ await run();assert.equal(state.patches.length,0);
 });
 test('out-of-window webhook does not replay older responsible history',async()=>{
  const {state,run}=setup([change('RESPONSIBLE_ID','716','650')]);
