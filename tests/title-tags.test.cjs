@@ -175,3 +175,24 @@ test('close writes all three parts of one response and summary event reuses comp
  assert.equal((await c.processTaskSummaryTags('1')).reason,'task_summary_already_tagged');assert.equal(state.ai,1);
 });
 
+
+test('release mismatch warning is built with task creator ID; marker never reaches fields',async()=>{
+ for(const mismatch of [false,true]){
+  const {c,state}=setup();
+  vm.runInContext(section('function isInsufficientInfoComment','function isDoneStageChange')+section('function extractTitleFromAiComment','function getTaskSummaryFieldValue'),c);
+  c.getCreatorIdFromTask=()=>826;
+  const raw='[b]✅ SUMMARY:[/b]\n'+(mismatch?'[RELEASE_MISMATCH]\n':'')+'Updated release.\n[b]📝 TITLE:[/b]\nUpdate completed\n[AI_TAGS]{"products":["бп"]}[/AI_TAGS]';
+  c.coworkRequest=async(method,url,body)=>{
+   state.calls.push({method,url,body});
+   if(url==='/chat/completions')return {choices:[{message:{content:raw}}]};
+   if(method==='PATCH')Object.assign(state.task,body);
+   return state.task;
+  };
+  await c.processClosedTask('1');
+  const comment=state.calls.find(x=>x.url==='/tasks/1/comments').body.message;
+  assert.equal(comment.includes('[USER=826]Постановщик[/USER]'),mismatch);
+  assert(!comment.includes('[RELEASE_MISMATCH]'));assert(!comment.includes('<826>'));
+  assert.equal(state.task.UF_TASK_SUMMARY,'Updated release.');
+  assert.equal(state.task.UF_TASK_TITLE,'Update completed');
+ }
+});

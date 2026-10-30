@@ -2481,6 +2481,17 @@ function buildInsufficientInfoComment(responsibleId) {
   return `⚠️ [b]Недостаточно информации.[/b] [USER=${responsibleId}]Исполнитель[/USER], пожалуйста, напиши пояснения.`;
 }
 
+function addReleaseMismatchWarning(comment, releaseMismatch, creatorId) {
+  if (!releaseMismatch) return comment;
+  const id = String(creatorId ?? '').trim();
+  const recipient = /^[1-9][0-9]*$/.test(id) ? `[USER=${id}]Постановщик[/USER], ` : '';
+  const warning = `❗️${recipient}релиз, указанный в задаче, не совпадает с фактическим.`;
+  const header = /\[b\]✅ SUMMARY:\[\/b\]/i;
+  return header.test(comment)
+    ? comment.replace(header, match => `${match}\n${warning}\n`)
+    : `${warning}\n\n${comment}`;
+}
+
 function extractSummaryFromAiComment(comment) {
   const text = String(comment || '').trim();
   const summaryMatch = text.match(/\[b\]✅ SUMMARY:\[\/b\]\s*([\s\S]*?)(?=\n\s*\[b\]📝 TITLE:\[\/b\]|$)/i);
@@ -3076,7 +3087,7 @@ ${JSON.stringify(withoutGeneratedTaskFields(contextparentID), null, 2)}
   - Раздел 📝 TITLE не выводи.
 - Если номера релизов отличаются:
   - После заголовка ✅ SUMMARY выведи отдельной строкой:
-    ❗️[USER=<creatorId>]Постановщик[/USER], релиз, указанный в задаче, не совпадает с фактическим.
+    [RELEASE_MISMATCH]
   - В разделе 📝 TITLE выведи только одно наименование задачи с фактическим номером релиза, указанным в комментариях.
   - Не предлагай второй вариант названия и не выводи никаких других вариантов.
 - Если номер релиза отсутствует в названии задачи или комментариях либо определить его невозможно, предупреждение не выводи и обработай задачу по общим правилам.
@@ -3092,8 +3103,8 @@ ${JSON.stringify(withoutGeneratedTaskFields(contextparentID), null, 2)}
 
 Упоминание постановщика:
 - Используй значение переменной creatorId.
-- Выведи его в формате: [USER=<creatorId>]Постановщик[/USER]
-- Не пытайся определять постановщика по данным JSON.
+- Не формируй упоминание постановщика и текст предупреждения самостоятельно: их добавит программа с ID из задачи.
+- Только при подтверждённом несовпадении релизов выведи отдельной строкой [RELEASE_MISMATCH]. В остальных случаях этот маркер не выводи. Не добавляй внутрь него ID или другие данные.
 
 ВЫВЕДИ РЕЗУЛЬТАТ В СЛЕДУЮЩЕМ ФОРМАТЕ
 
@@ -3124,7 +3135,7 @@ ${JSON.stringify(withoutGeneratedTaskFields(contextparentID), null, 2)}
 [b]✅ SUMMARY:[/b]
 <2-4 предложения:проблема/запрос, выполненные или предложенные действия, подтвержденный результат при наличии>
 
-❗️[USER=<creatorId>]Постановщик[/USER], релиз, указанный в задаче, не совпадает с фактическим.
+[RELEASE_MISMATCH]
 
 [b]📝 TITLE:[/b]
 Обновление базы ... на релиз <фактический релиз>
@@ -3520,7 +3531,8 @@ async function processClosedTask(taskId, options = {}) {
   const tagClassification = extractTaskTagClassification(rawAiComment);
   // The summary-field event reuses this same analysis, but only applies its tags.
   if (options.tagsOnly) return { tagClassification, mediaWarnings };
-  const aiComment = stripTaskTagBlock(rawAiComment);
+  const releaseMismatch = /\[RELEASE_MISMATCH\]/i.test(rawAiComment);
+  const aiComment = stripTaskTagBlock(rawAiComment).replace(/\[RELEASE_MISMATCH\]/gi, '').trim();
   if (!aiComment && timeSpentInLogs === 0) {
     return {
       ok: true,
@@ -3624,7 +3636,11 @@ async function processClosedTask(taskId, options = {}) {
     };
   }
 
-  const commentToPost = isSummaryOnlyGroup(groupId) ? extractSummaryFromAiComment(aiComment) : aiComment;
+  const commentToPost = addReleaseMismatchWarning(
+    isSummaryOnlyGroup(groupId) ? extractSummaryFromAiComment(aiComment) : aiComment,
+    releaseMismatch,
+    creatorId
+  );
 
   if (!dryRun) {
     await coworkRequest('POST', `/tasks/${taskId}/comments`, {
